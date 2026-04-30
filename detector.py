@@ -1,157 +1,277 @@
-# detector.py - Công cụ Phát hiện IP Lạ với Trực quan hóa
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
-import joblib
-import numpy as np
-import sys
+"""
+MAHORAGA SENTINEL AI v2
+Adaptive Threat Detection Engine
+
+Upgrade:
+✔ Korean + English UI
+✔ Better CLI Dashboard
+✔ CSV Log Input
+✔ Real-time Detect Mode
+✔ Risk Level
+✔ Save JSON Report
+✔ History Table
+✔ Better Error Handling
+
+Run:
+python detector_v2.py
+python detector_v2.py --csv traffic.csv
+python detector_v2.py --json report.json
+"""
+
 import os
+import sys
+import json
+import time
+import joblib
+import argparse
+import numpy as np
+import pandas as pd
+
+from datetime import datetime
 from rich.console import Console
 from rich.table import Table
+from rich.panel import Panel
 from rich.text import Text
 
-# --- Cài đặt Console (để in ra Terminal đẹp hơn) ---
 console = Console()
 
-# --- 1. TẢI CÁC TÀI NGUYÊN (Giữ nguyên) ---
-MODEL_PATH = 'isolation_forest_model.pkl'
-SCALER_PATH = 'scaler.pkl'
-THRESHOLD_PATH = 'threshold.txt'
+# ==================================================
+# CONFIG
+# ==================================================
+MODEL_PATH = "isolation_forest_model.pkl"
+SCALER_PATH = "scaler.pkl"
+THRESHOLD_PATH = "threshold.txt"
 
-try:
-    loaded_model = joblib.load(MODEL_PATH)
-    loaded_scaler = joblib.load(SCALER_PATH)
-    with open(THRESHOLD_PATH, 'r') as f:
-        loaded_threshold = float(f.read())
-except FileNotFoundError as e:
-    console.print(f"[bold red]Lỗi:[/bold red] Không tìm thấy tệp tài nguyên cần thiết ({e.filename}).")
-    console.print("Vui lòng chạy 'python model_creator.py' trước.")
-    sys.exit(1)
-except Exception as e:
-    console.print(f"[bold red]Lỗi khi tải tài nguyên:[/bold red] {e}")
-    sys.exit(1)
+results_history = []
 
-input_dim = loaded_scaler.n_features_in_
-results_history = [] # Danh sách để lưu trữ kết quả của nhiều IP
-
-# --- 2. HÀM PHÁT HIỆN VÀ GHI NHẬN ---
-
-def process_single_ip(ip_name, data_values, model, scaler, threshold):
-    # Chuyển đổi chuỗi đầu vào THÔ thành mảng numpy
+# ==================================================
+# LOAD RESOURCES
+# ==================================================
+def load_resources():
     try:
-        data_array = np.array([float(x.strip()) for x in data_values.split(',')])
-        
-        if data_array.size != input_dim:
-             console.print(f"[bold yellow]⚠️ Lỗi:[/bold yellow] Số lượng tính năng không khớp. Cần {input_dim} giá trị.")
-             return None
-             
-    except ValueError:
-        console.print("[bold yellow]⚠️ Lỗi:[/bold yellow] Đầu vào không hợp lệ.")
-        return None
+        model = joblib.load(MODEL_PATH)
+        scaler = joblib.load(SCALER_PATH)
 
-    # Chuẩn hóa dữ liệu thô
-    data_point = data_array.reshape(1, -1)
-    scaled_data = scaler.transform(data_point)
+        with open(THRESHOLD_PATH, "r") as f:
+            threshold = float(f.read())
 
-    # Tính Điểm Bất thường IF (Score)
-    anomaly_score = model.decision_function(scaled_data)[0]
+        return model, scaler, threshold
 
-    # Quyết định
-    is_anomaly = anomaly_score < threshold
-    status_text = "BẤT THƯỜNG (LẠ) 🚨" if is_anomaly else "BÌNH THƯỜNG ✅"
-    color = "bold red" if is_anomaly else "bold green"
-    
-    # Ghi nhận kết quả
-    result = {
-        "IP": ip_name,
-        "Score": anomaly_score,
-        "Status": status_text,
-        "Color": color
-    }
-    results_history.append(result)
-    
-    console.print(f"[{color}]{ip_name}:[/] Điểm Score: [bold]{anomaly_score:.4f}[/], Trạng thái: [{color}]{status_text}[/]")
-    return result
+    except Exception as e:
+        console.print(f"[bold red]ERROR:[/] {e}")
+        sys.exit(1)
 
-# --- 3. HÀM TRỰC QUAN HÓA (BIỂU ĐỒ) ---
+# ==================================================
+# UI
+# ==================================================
+def banner(input_dim, threshold):
+    console.print(Panel.fit(
+        f"[bold cyan]MAHORAGA SENTINEL AI v2[/]\n"
+        f"[yellow]Adaptive Threat Detection Engine[/]\n\n"
+        f"Features: [green]{input_dim}[/] | "
+        f"Threshold: [magenta]{threshold:.4f}[/]",
+        border_style="cyan"
+    ))
 
-def display_results_visualization(results, threshold):
-    if not results:
-        console.print("[yellow]Chưa có dữ liệu để trực quan hóa.[/yellow]")
+# ==================================================
+# RISK LEVEL
+# ==================================================
+def risk_level(score, threshold):
+    if score < threshold - 0.10:
+        return "CRITICAL", "bold red"
+    elif score < threshold:
+        return "HIGH", "red"
+    elif score < threshold + 0.05:
+        return "MEDIUM", "yellow"
+    else:
+        return "LOW", "green"
+
+# ==================================================
+# DETECT SINGLE
+# ==================================================
+def detect_single(ip_name, values, model, scaler, threshold):
+
+    try:
+        arr = np.array([float(x) for x in values]).reshape(1, -1)
+
+    except:
+        console.print("[red]Invalid numeric input[/]")
         return
-    
-    # Tạo bảng so sánh
-    table = Table(title="\nBIỂU ĐỒ TRỰC QUAN HÓA ĐỘ BẤT THƯỜNG", show_lines=True)
-    table.add_column("IP / ID", style="cyan", justify="left")
-    table.add_column("Điểm Bất thường (Score)", style="magenta")
-    table.add_column("Trạng thái", style="bold")
-    table.add_column("Biểu đồ Thanh", style="yellow")
-    
-    # Tìm min/max score để chuẩn hóa cho biểu đồ thanh
-    scores = [r['Score'] for r in results]
-    min_score = min(scores)
-    max_score = max(scores)
-    
-    # Khảo sát phạm vi scores để vẽ biểu đồ thanh có ý nghĩa hơn
-    score_range = max_score - min_score
-    if score_range == 0:
-        score_range = 1 # Tránh chia cho 0
 
-    for r in sorted(results, key=lambda x: x['Score']): # Sắp xếp để dễ so sánh
-        score_normalized = (r['Score'] - min_score) / score_range
-        
-        # Vẽ biểu đồ thanh dựa trên độ lớn của điểm số (tối đa 20 ký tự #)
-        bar_length = int(score_normalized * 20)
-        bar = Text("█" * bar_length, style=r['Color'])
-        bar.append(f" ({score_normalized:.2f})")
-        
+    scaled = scaler.transform(arr)
+    score = model.decision_function(scaled)[0]
+
+    abnormal = score < threshold
+    status = "ANOMALY 🚨" if abnormal else "NORMAL ✅"
+
+    risk, color = risk_level(score, threshold)
+
+    item = {
+        "time": str(datetime.now()),
+        "ip": ip_name,
+        "score": float(score),
+        "status": status,
+        "risk": risk
+    }
+
+    results_history.append(item)
+
+    console.print(
+        f"[{color}] {ip_name:<15} "
+        f"Score: {score:.4f} "
+        f"Status: {status:<12} "
+        f"Risk: {risk} [/]"
+    )
+
+# ==================================================
+# SHOW TABLE
+# ==================================================
+def show_history():
+
+    if not results_history:
+        console.print("[yellow]No data[/]")
+        return
+
+    table = Table(title="Detection History", show_lines=True)
+
+    table.add_column("Time", style="cyan")
+    table.add_column("IP")
+    table.add_column("Score")
+    table.add_column("Status")
+    table.add_column("Risk")
+
+    for r in results_history:
         table.add_row(
-            r['IP'],
-            f"{r['Score']:.4f}",
-            Text(r['Status'], style=r['Color']),
-            bar
+            r["time"][:19],
+            r["ip"],
+            f'{r["score"]:.4f}',
+            r["status"],
+            r["risk"]
         )
-    
+
     console.print(table)
-    console.print(f"[bold yellow]Ngưỡng:[/bold yellow] [bold magenta]{threshold:.4f}[/] (Điểm dưới ngưỡng là bất thường)")
 
-# --- 4. CHẠY CLI TƯƠNG TÁC ---
+# ==================================================
+# SAVE JSON
+# ==================================================
+def save_json(file):
+    with open(file, "w", encoding="utf-8") as f:
+        json.dump(results_history, f, indent=4, ensure_ascii=False)
 
-if __name__ == '__main__':
-    console.print("=" * 50, style="bold blue")
-    console.print("--- Công cụ Phát hiện IP Lạ (Isolation Forest CLI) ---", style="bold yellow")
-    console.print(f"Mô hình đang sử dụng [bold]{input_dim}[/] tính năng. Ngưỡng: [bold magenta]{loaded_threshold:.4f}[/]")
-    console.print("=" * 50, style="bold blue")
-    
-    ip_counter = 1
-    
+    console.print(f"[green]Saved:[/] {file}")
+
+# ==================================================
+# CSV MODE
+# ==================================================
+def process_csv(file, model, scaler, threshold):
+
+    try:
+        df = pd.read_csv(file)
+
+    except Exception as e:
+        console.print(f"[red]CSV Error:[/] {e}")
+        return
+
+    if "ip" not in df.columns:
+        console.print("[red]CSV must contain 'ip' column[/]")
+        return
+
+    feature_cols = [c for c in df.columns if c != "ip"]
+
+    for _, row in df.iterrows():
+        ip = row["ip"]
+        vals = row[feature_cols].tolist()
+        detect_single(ip, vals, model, scaler, threshold)
+
+# ==================================================
+# REALTIME DEMO
+# ==================================================
+def realtime_demo(model, scaler, threshold, dim):
+
+    console.print("[cyan]Realtime Mode Started (Ctrl+C exit)[/]")
+
+    try:
+        while True:
+            fake = np.random.normal(50, 10, dim)
+
+            if np.random.rand() < 0.2:
+                fake = fake * np.random.uniform(2, 4)
+
+            detect_single(
+                f"LiveIP_{np.random.randint(1,999)}",
+                fake,
+                model,
+                scaler,
+                threshold
+            )
+
+            time.sleep(2)
+
+    except KeyboardInterrupt:
+        console.print("[red]Realtime Stopped[/]")
+
+# ==================================================
+# MAIN
+# ==================================================
+def main():
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--csv")
+    parser.add_argument("--json")
+    parser.add_argument("--live", action="store_true")
+
+    args = parser.parse_args()
+
+    model, scaler, threshold = load_resources()
+
+    input_dim = scaler.n_features_in_
+
+    banner(input_dim, threshold)
+
+    # CSV MODE
+    if args.csv:
+        process_csv(args.csv, model, scaler, threshold)
+
+        if args.json:
+            save_json(args.json)
+
+        return
+
+    # LIVE MODE
+    if args.live:
+        realtime_demo(model, scaler, threshold, input_dim)
+        return
+
+    # INTERACTIVE MODE
     while True:
-        try:
-            user_input = console.input(f"Nhập [bold cyan]ID/Tên IP[/] và [bold]{input_dim}[/] giá trị THÔ (cách nhau bằng dấu phẩy) hoặc 'show'/'exit':\n> ")
-            
-            if user_input.lower() == 'exit':
-                console.print("\n[bold red]Đã thoát công cụ.[/bold red]")
-                break
-            
-            if user_input.lower() == 'show':
-                display_results_visualization(results_history, loaded_threshold)
-                continue
-            
-            # Phân tách đầu vào: Giả sử người dùng nhập: Tên_IP, giá_trị_1, giá_trị_2, ...
-            parts = [p.strip() for p in user_input.split(',')]
-            
-            if len(parts) == input_dim + 1:
-                ip_name = parts[0]
-                data_string = ",".join(parts[1:])
-                process_single_ip(ip_name, data_string, loaded_model, loaded_scaler, loaded_threshold)
-                ip_counter += 1
-            elif len(parts) == input_dim:
-                # Nếu người dùng chỉ nhập giá trị, sử dụng ID tự động
-                data_string = user_input
-                ip_name = f"IP_Test_{ip_counter}"
-                process_single_ip(ip_name, data_string, loaded_model, loaded_scaler, loaded_threshold)
-                ip_counter += 1
-            else:
-                console.print(f"[bold yellow]⚠️ Lỗi:[/bold yellow] Định dạng nhập sai. Vui lòng nhập: [cyan]Tên_IP, [yellow]10_giá_trị_THÔ[/] (hoặc chỉ 10 giá trị).")
-                
-        except KeyboardInterrupt:
-            console.print("\n[bold red]Đã thoát công cụ.[/bold red]")
+
+        cmd = console.input(
+            "\n[bold cyan]Input:[/] "
+            "IP,val1,val2,... / show / save / exit\n> "
+        )
+
+        if cmd.lower() == "exit":
             break
+
+        if cmd.lower() == "show":
+            show_history()
+            continue
+
+        if cmd.lower() == "save":
+            save_json("report.json")
+            continue
+
+        parts = [x.strip() for x in cmd.split(",")]
+
+        if len(parts) == input_dim + 1:
+            ip = parts[0]
+            vals = parts[1:]
+            detect_single(ip, vals, model, scaler, threshold)
+        else:
+            console.print("[yellow]Wrong format[/]")
+
+if __name__ == "__main__":
+    main()
